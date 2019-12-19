@@ -6,11 +6,13 @@
     <script src="./config.js"></script>
     <script src="./tmi.min.js"></script>
   </head>
+
   <body>
     <audio id="player" />
   </body>
+  
   <script>
-    let cooldown = {
+    const cooldowns = {
       'chatters': {
         // '<pseudo>': <date last command execution>
       },
@@ -18,13 +20,131 @@
         // '<command>': <date last command execution>
       },
       'command': 0,
+    };
+
+    function is_owner(tags) {
+      return tags['username'] === config['channel'];
+    }
+
+    function is_mod(tags) {
+      return tags['username'] === config['channel'] || tags['mod'];
+    }
+
+    function is_sub(tags) {
+      return 'premium' in tags['badges'] || 'subscriber' in tags['badges'] || tags['subscriber'];
+    }
+
+    function is_vip(tags) {
+      return 'vip' in tags['badges'];
+    }
+
+    function set_cooldown(cooldown, identifier)
+    {
+      if (identifier !== undefined)
+      {
+        cooldowns[cooldown][identifier] = Date.now() / 1000.;
+      }
+      else
+      {
+        cooldowns[cooldown] = Date.now() / 1000.;
+      }
+    }
+
+    function in_cooldown(cooldown, identifier)
+    {
+      let max = config['cooldown'][cooldown];
+      let now = Date.now() / 1000.;
+
+      console.log('Checking cooldown ', cooldown, identifier, cooldowns);
+
+      return (identifier !== undefined ? cooldowns[cooldown][identifier] : cooldowns[cooldown]) > now - max;
     }
 
     let isPlaying = false;
     const player = document.getElementById('player');
-    player.addEventListener('ended', () => {
+    
+    player.addEventListener('ended', () => { isPlaying = false; });
+
+    function play(tags, data)
+    {
+      // Vérifie les droits des utilisateurs
+      if(!config['rights']['user'])
+      {
+        if(is_owner(tags)) {
+          console.log(`${config['channel']} est le boss, lets go`);
+        }
+        else if(config['rights']['mods'] && is_mod(tags)) {
+          console.log(`${tags['username']} est un modo, lets go`);
+        }
+        else if(config['rights']['subs'] && is_sub(tags)) {
+          console.log(`${tags['username']} est un sub, lets go`);
+        }
+        else if(config['rights']['vips'] && is_vip(tags)) {
+          console.log(`${tags['username']} est un vip, lets go`);
+        } else {
+          return;
+        }
+      }
+
+      if (in_cooldown('command'))
+      {
+        console.error(`The use of the command is violating the ${config['cooldown']['command']}s cooldown`);
+        return;
+      }
+
+      // Vérifie qu'un fichier n'est pas déjà en lecture
+      if(isPlaying) {
+        console.error('Un morceau est déjà en lecture');
+        return;
+      }
+
+      let track = data[1];
+
+      // on parcours le tableau 'tracks'
+      for(let idx in tracks)
+      {
+        // Si la command est trouvée
+        if(track === tracks[idx]['command'])
+        {
+          console.log(`Lecture de ${tracks[idx]['file']} par ${tags['username']}`);
+
+          // Vérifions si l'utilisateur ne dépasse pas le cooldown
+          if (in_cooldown('chatters', tags['username']))
+          {
+            console.error(`${tags['username']} is violating the ${config['cooldown']['user']}s cooldown`);
+            return;
+          }
+
+          // Vérifions si le morceau ne dépasse pas le cooldown
+          if (in_cooldown('tracks', track))
+          {
+            console.error(`Track ${track} is violating the ${config['cooldown']['track']}s cooldown`);
+            return;
+          }
+
+          set_cooldown('chatters', tags['username']);
+          set_cooldown('tracks', track);
+          set_cooldown('command');
+
+          player.src = `file:///${tracks[idx]['file']}`;
+          player.play();
+          isPlaying = true;
+        }
+      }
+    }
+
+    function stop(tags)
+    {
+      if(!is_mod(tags))
+        return;
+
+      player.pause();
       isPlaying = false;
-    });
+    }
+
+    const commands = {};
+    commands[config['commands']['play'].toLowerCase()] = play;
+    commands[config['commands']['stop'].toLowerCase()] = stop;
 
     const chat = new window.tmi.Client({
       options: { debug: true },
@@ -43,89 +163,17 @@
 
     chat.on('message', (channel, tags, message, self) => {
       console.log(tags);
-      let data = message.split(' ');
+
+      let data = message.toLowerCase().split(' ');
       let now = Date.now() / 1000.;
 
-      // First thing first, stop if requested
-      if((tags['mod'] === true) || (tags['username'] === config['channel'])) {
-        if (data[0] === '!stop') {
-          player.pause();
-          isPlaying = false;
-        }
-      }
+      let command = data[0].toLowerCase();
 
-      // <prefix> <command>
-      if (data[0] !== config['prefix'])
-        // Fail-fast si le prefix est faux
-        return;
-
-      // Vérifie les droits des utilisateurs
-      if(config['rights']['user'] === false) {
-        if(tags['username'] === config['channel']) {
-          console.log(`${config['channel']} est le boss, lets go`);
-        }
-        else if((config['rights']['mods'] === true) && (tags['mod'] === true)) {
-          console.log(`${tags['username']} est un modo, lets go`);
-        }
-        else if((config['rights']['subs'] === true) &&
-          ('premium' in tags['badges'] || 'subscriber' in tags['badges'])) {
-          console.log(`${tags['username']} est un sub, lets go`);
-        }
-        else if((config['rights']['vips'] === true) && ('vip' in tags['badges'])) {
-          console.log(`${tags['username']} est un vip, lets go`);
-        } else {
-          return;
-        }
-      }
-
-      // Vérifie le cooldown du bot
-      if( cooldown['command'] > (now - config['cooldown']['command'])) {
-        console.error(`The use of the command is violating the ${config['cooldown']['command']}s cooldown`);
-        return;
-      }
-
-      // Vérifie qu'un fichier n'est pas déjà en lecture
-      if(isPlaying) {
-        console.error('Un morceau est déjà en lecture');
-        return;
-      }
-
-      let command = data[1];
-      // on parcours le tableau 'tracks'
-      for(let idx in tracks) {
-        // Si la command est trouvée
-        if(command === tracks[idx]['command']) {
-          console.log(`Lecture de ${tracks[idx]['file']} par ${tags['username']}`);
-
-          // Vérifions si l'utilisateur ne dépasse pas le cooldown
-          let user = tags['username'];
-          if (user in cooldown['chatters']) {
-            let ts = cooldown['chatters'][user];
-            if( ts > (now - config['cooldown']['user'])) {
-              console.error(`${user} is violating the ${config['cooldown']['user']}s cooldown`);
-              return;
-            }
-          }
-
-          // Vérifions si la track ne dépasse pas le cooldown
-          if (command in cooldown['tracks']) {
-            let ts = cooldown['tracks'][command];
-            if( ts > (now - config['cooldown']['track'])) {
-              console.error(`Track ${command} is violating the ${config['cooldown']['track']}s cooldown`);
-              return;
-            }
-          }
-
-          cooldown['chatters'][user] = now;  // Met à jour le ts du user
-          cooldown['tracks'][command] = now;
-          cooldown['command'] = now;
-
-          player.src = `file:///${tracks[idx]['file']}`;
-          player.play();
-          isPlaying = true;
-        }
+      if (command in commands)
+      {
+        console.log("Handling command for user " + tags['username'] + ":", command, commands[command])
+        commands[command](tags, data);
       }
     });
   </script>
-
 </html>
